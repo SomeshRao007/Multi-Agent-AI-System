@@ -1,35 +1,25 @@
 #!/usr/bin/env python3
-"""
-Multi-Model AI Crew with CrewAI and Ollama Integration
-=====================================================
-
-This script creates a collaborative AI crew using three specialized models:
-- Qwen3-1.7B: Fast analytical thinking and problem breakdown into ToDo list
-- DeepSeek-R1-8B: Advanced reasoning, processing ToDo list and then synthesising a final solution.
-
-Hardware Requirements:
-- RTX 3060 12GB VRAM (✓ Your setup is perfect)
-- 32GB RAM (✓)
-- Ubuntu 24 LTS (✓)
-
-Author: AI Engineering Assistant
-"""
 
 import os
+
+from crewai_tools.tools.scrape_website_tool.scrape_website_tool import ScrapeWebsiteTool
+from dotenv import load_dotenv
+
+# Load environment variables from .env file at the very beginning
+load_dotenv()
+
 import sys
 import time
 import json
 from typing import Dict, Any, Optional
 from pathlib import Path
-
-# Core CrewAI imports
-from crewai import Agent, Task, Crew, Process
-from crewai.llm import LLM
-
-# Utility imports
 import requests
 from dataclasses import dataclass
 from enum import Enum
+# Core CrewAI imports
+from crewai import Agent, Task, Crew, Process
+from crewai.llm import LLM
+from crewai_tools import BraveSearchTool, FileReadTool, DirectoryReadTool
 
 
 # Color codes for enhanced terminal output
@@ -137,6 +127,9 @@ class MultiModelCrew:
         self.llms = {}
         self.agents = {}
         self.knowledge_base = {}
+        # Initialize the search tool
+        self.search_tool = BraveSearchTool()
+        self.scrape_tool = ScrapeWebsiteTool()
 
     def _setup_model_configurations(self) -> Dict[str, ModelConfig]:
         """Configure each model with its optimal settings and role"""
@@ -148,25 +141,25 @@ class MultiModelCrew:
                 role="Problem Analyst",
                 description="analytical thinking, problem decomposition, creating a ToDo list",
                 temperature=0.3,  # Lower for more focused analysis
-                context_window=4096
+                context_window=32768
             ),
-            # "executor": ModelConfig(
-            #     name="Llama Executor",
-            #     ollama_model="llama3.2:1b",
-            #     strength=ModelStrength.EXECUTION,
-            #     role="Task Executor & Processor",
-            #     description="Efficient task execution, information processing, and detail handling",
-            #     temperature=0.5,  # Balanced for reliable execution
-            #     context_window=4096
-            # ),
-            "synthesizer": ModelConfig(
-                name="DeepSeek Synthesizer",
-                ollama_model="deepseek-r1:8b",
+            "researcher": ModelConfig(
+                name="DeepSeek Researcher",
+                ollama_model="deepseek-r1:8b",  # <-- Use DeepSeek for research
                 strength=ModelStrength.REASONING,
-                role="Advanced Reasoner problem solving",
-                description="Complex reasoning, for solving problems and synthesise solution",
-                temperature=0.6,  # Higher for creative reasoning
-                context_window=8192
+                role="Information Researcher",
+                description="Accessing the internet and local files to gather information.",
+                temperature=0.4,
+                context_window=128000
+            ),
+            "synthesizer": ModelConfig(
+                name="Gemma3 Synthesizer",
+                ollama_model="gemma3:4b",  # <-- Use Gemma for synthesis
+                strength=ModelStrength.EXECUTION,
+                role="Solution Synthesizer",
+                description="Synthesizes information into a final answer based on research.",
+                temperature=0.6,
+                context_window=32768
             )
         }
 
@@ -198,9 +191,6 @@ class MultiModelCrew:
         # Initialize LLM connections
         self._setup_llm_connections()
 
-        # Create specialized agents
-        # self._create_agents()
-
         print(f"{Colors.OKGREEN}✅ Multi-Model Crew initialized successfully!{Colors.ENDC}")
         return True
 
@@ -215,7 +205,7 @@ class MultiModelCrew:
                     base_url="http://localhost:11434",
                     temperature=config.temperature,
                     # Additional parameters for optimal performance
-                    max_tokens=2048,
+                    max_tokens=4096,  # Increased max_tokens
                     top_p=0.9,
                     frequency_penalty=0.0,
                     presence_penalty=0.0
@@ -239,8 +229,7 @@ class MultiModelCrew:
         print(f"{Colors.OKBLUE}Problem: {problem}{Colors.ENDC}")
         print()
 
-
-
+        # --- Create Agents ---
         # 1. Analyst Agent (Qwen3)
         analyst = Agent(
             role="Problem Analyst",
@@ -248,59 +237,64 @@ class MultiModelCrew:
             backstory="You are a machine-like planner. You receive a problem and output a numbered list of steps. You do not add commentary, explanations, or any text other than the numbered list itself.",
             llm=self.llms["analyst"],
             verbose=False,
-            allow_delegation=False,
-            max_iter=3,
-            max_retry_limit=2,
-            # memory=True
+            allow_delegation=False
         )
 
+        # 2. Researcher Agent (DeepSeek-R1)
+        researcher = Agent(
+            role="Information Researcher",
+            goal="Gather, verify, and synthesize information from the internet to answer questions based on a provided plan.",
+            backstory="You are a skilled researcher, adept at navigating the web. You follow a given plan, perform searches, and provide clear, fact-based answers.",
+            llm=self.llms["researcher"],
+            tools=[self.search_tool, self.scrape_tool],
+            verbose=True,
+            allow_delegation=False
+        )
 
-
-        # 3. Synthesizer Agent (DeepSeek-R1)
+        # 3. Synthesizer Agent (Gemma3)
         synthesizer = Agent(
-            role="Solution Synthesizer",  # Renamed for clarity
-            goal="Methodically execute every step in a given to-do list to build a final answer.",
-            backstory="You are a focused executor. You DO NOT create plans. You receive a numbered to-do list from a Problem Analyst and your only job is to perform each task on that list, using the results to construct a final, comprehensive answer.",
+            role="Solution Synthesizer",
+            goal="Methodically review the gathered information from the researcher and compile a final, comprehensive answer.",
+            backstory="You are a focused writer. You DO NOT perform research. You receive a research report and your only job is to format it into a final, comprehensive answer that directly addresses the original user's question.",
             llm=self.llms["synthesizer"],
             verbose=True,
-            allow_delegation=False,
-            max_iter=5,
-            max_retry_limit=2,
-            # reasoning=True,  # Default: False
-            # max_reasoning_attempts=5,
-            # respect_context_window=True,
-            # memory=True
+            allow_delegation=False
         )
 
-        # --- Create Fresh Tasks for this specific run ---
+        # --- Create Tasks for this specific run ---
 
         # Task 1: Analysis and Planning
         analysis_task = Task(
-            description=f"Analyze the following problem and break it down into a numbered to-do list: '{problem}'",
-            expected_output="""A numbered list of 4-6 actionable steps required to solve the problem.
-                    IMPORTANT: Your output MUST ONLY be the numbered list. Do not provide any introduction, explanation, or conclusion. Just the list itself.""",
+            description=f"Analyze the following problem and break it down into a numbered to-do list for a researcher: '{problem}'",
+            expected_output="A numbered list of 2-4 actionable search queries for a researcher to execute.",
             agent=analyst,
-            # Human input is not needed for this automated task
-            # human_input=False
         )
 
-        # Task 2: Synthesis and Final Solution
-        synthesis_task = Task(
-            description="""You have been given a to-do list by the 'Problem Analyst'. Your task is to execute EVERY step on that list.
-                    Do not add new steps or deviate from the plan.
-                    Base your entire final answer on the results of executing these steps.
-                    The to-do list you must follow is in the context.""",
-            expected_output="A comprehensive, well-structured final answer that is the direct result of completing all steps in the provided to-do list. The answer must directly address the original problem.",
-            agent=synthesizer,
+        # Task 2: Research and Information Gathering
+        research_task = Task(
+            description="""For each step in the provided to-do list, execute a search and gather the relevant information.
+            The to-do list you must follow is in the context.""",
+            expected_output="A detailed report summarizing your findings from the search results. The report should directly answer the questions posed in the to-do list. Cite your sources.",
+            agent=researcher,
             context=[analysis_task]
+        )
+
+        # Task 3: Synthesis and Final Solution
+        synthesis_task = Task(
+            description="""You have been given a research report by the 'Information Researcher'. Your task is to compile this information into a final, well-structured answer.
+            Do not add new information or deviate from the provided report.
+            Base your entire final answer on the results from the research report.""",
+            expected_output="A comprehensive, well-structured final answer that is the direct result of the research. The answer must directly address the original problem.",
+            agent=synthesizer,
+            context=[research_task]
         )
         # --- Create and configure the crew with the fresh components ---
         crew = Crew(
-            agents=[analyst,  synthesizer],#executor,
-            tasks=[analysis_task,  synthesis_task],#execution_task,
+            agents=[analyst, researcher, synthesizer],
+            tasks=[analysis_task, research_task, synthesis_task],
             process=Process.sequential,
             verbose=True,
-            memory=False,  # Crew's memory is fresh for each new instance
+            memory=False,
             max_rpm=30,
             embedder={
                 "provider": "ollama",
@@ -327,21 +321,6 @@ class MultiModelCrew:
         except Exception as e:
             print(f"{Colors.FAIL}\n✗ Error during problem solving: {str(e)}{Colors.ENDC}")
             return f"Error: {str(e)}"
-
-    def get_system_status(self) -> Dict[str, Any]:
-        """Get comprehensive system status"""
-        status = {
-            "ollama_running": self.ollama_manager.check_ollama_status(),
-            "models_available": {},
-            "agents_ready": len(self.agents) == 3,
-            "llms_connected": len(self.llms) == 3
-        }
-
-        for key, config in self.models_config.items():
-            status["models_available"][config.ollama_model] = self.ollama_manager.check_model_availability(
-                config.ollama_model)
-
-        return status
 
 
 def main():

@@ -10,7 +10,7 @@ langchain-ollama>=0.2.0
 
 # Latest Ollama integration
 ollama>=0.5.1
-
+brave-search
 # Essential utilities
 requests>=2.31.0
 pydantic>=2.8.0,<3.0
