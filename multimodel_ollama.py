@@ -233,7 +233,7 @@ class MultiModelCrew:
         # 1. Analyst Agent (Qwen3)
         analyst = Agent(
             role="Problem Analyst and Strategist",
-            goal="First, analyze a problem to determine if it can be solved with internal reasoning or if it requires internet research. Then, create a precise plan for the next agent to follow. Do not search over the internet, your job is to decide if the next agent needs to search the internet or not, along with a to-do list.",
+            goal="First, analyze a problem to determine if it can be solved with internal logical reasoning or if it requires internet research. Then, create a precise plan that consist of either search or reasoning for the next agent to follow. Do not search over the internet, your job is to decide if the next agent needs to search the internet or not, along with a to-do list.",
             backstory="You are a master strategist. Your first step is always to determine the nature of the problem: does it require new information, or can it be solved with logic and existing knowledge? Based on this, you produce a clear, actionable plan that explicitly states whether to search the web or to use reasoning. You never execute the plan yourself; you only create it.",
             llm=self.llms["analyst"],
             verbose=True,
@@ -243,8 +243,8 @@ class MultiModelCrew:
         # 2. Researcher Agent (DeepSeek-R1)
         researcher = Agent(
             role="Conditional Information Processor",
-            goal="Execute a plan from the Problem Analyst. You will either perform internet research or use your internal knowledge based *only* on the instructions in the plan. When using a tool, your FINAL and ONLY output must be the JSON action for the tool call.",
-            backstory="You are a hyper-efficient, silent processor. You follow plans with precision. If a plan requires reasoning, you provide a detailed report. If the plan requires a search, you respond ONLY with the required tool-calling JSON and absolutely no other conversational text or explanation. You understand that any extra text before or after the JSON will cause a system failure.",
+            goal="Execute a plan from the Problem Analyst. You will either perform internet research or use your internal knowledge based *only* on the instructions in the plan. IF YOU PERFORM A SEARCH AND SCRAPE A WEBSITE, YOU MUST SUMMARIZE OR EXTRACT ONLY THE MOST RELEVANT INFORMATION FROM THE SCRAPED CONTENT THAT DIRECTLY ANSWERS THE ORIGINAL PROBLEM OR PLAN QUERY. DO NOT PASS RAW, UNPROCESSED LARGE TEXT BLOCKS TO THE NEXT AGENT. Your final output should be a concise, relevant report.",
+            backstory="You are a hyper-efficient, silent processor. You follow plans with precision. If a plan requires reasoning, you provide a detailed report. If the plan requires a search, you perform the search, scrape the most relevant URL, AND THEN CRITICALLY, you process the scraped data by summarizing or extracting only the key points relevant to the original query, significantly reducing its size before passing it on. You understand that passing extremely large raw text blocks will cause failures.",
             llm=self.llms["researcher"],
             tools=[self.search_tool, self.scrape_tool],
             verbose=True,
@@ -279,10 +279,11 @@ class MultiModelCrew:
         # Task 2: Research and Information Gathering
         research_task = Task(
             description=f"""Read the plan provided by the Problem Analyst.
-                            - If the plan says "SEARCH", perform the search. Then, take the most relevant URL from the search results and use the scrape tool to read its content.
-                            - If the plan says "REASON", use your internal knowledge to answer.
-                            Your final output should be the information you gathered, whether from scraping or reasoning.""",
-            expected_output="""A detailed report of the information gathered from either the scraped website content or internal knowledge. This report will be passed to the synthesizer.""",
+                                    - If the plan says "SEARCH", perform the search. Then, take the most relevant URL from the search results and use the scrape tool to read its content.
+                                    ***CRITICAL STEP***: AFTER SCRAPING THE CONTENT, YOU MUST PROCESS IT. Summarize or extract only the most relevant information from the scraped webpage that directly addresses the original problem or the specific search query from the plan. DO NOT include the entire scraped text in your final output. The goal is to drastically reduce the amount of text passed to the next agent.
+                                    - If the plan says "REASON", use your internal knowledge to answer.
+                                    Your final output should be the processed, concise information you gathered, whether from the summarized scraped content or internal knowledge.""",
+            expected_output="""A detailed but CONCISE report of the information gathered. If data was scraped, this report MUST be a significantly summarized or extracted version of the scraped content, focusing only on the most relevant parts. This processed report will be passed to the synthesizer.""",
             agent=researcher,
             context=[analysis_task]
         )
