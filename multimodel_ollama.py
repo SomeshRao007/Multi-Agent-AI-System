@@ -135,7 +135,7 @@ class MultiModelCrew:
         """Configure each model with its optimal settings and role"""
         return {
             "analyst": ModelConfig(
-                name="Qwen3 Analyst",
+                name="Qwen Analyst",
                 ollama_model="qwen3:1.7b",
                 strength=ModelStrength.ANALYTICAL,
                 role="Problem Analyst",
@@ -149,12 +149,12 @@ class MultiModelCrew:
                 strength=ModelStrength.REASONING,
                 role="Information Researcher",
                 description="Accessing the internet and local files to gather information.",
-                temperature=0.4,
+                temperature=0.6,
                 context_window=128000
             ),
             "synthesizer": ModelConfig(
                 name="Gemma3 Synthesizer",
-                ollama_model="gemma3:4b",  # <-- Use Gemma for synthesis
+                ollama_model="gemma3:1b",  # <-- Use Gemma for synthesis
                 strength=ModelStrength.EXECUTION,
                 role="Solution Synthesizer",
                 description="Synthesizes information into a final answer based on research.",
@@ -232,19 +232,19 @@ class MultiModelCrew:
         # --- Create Agents ---
         # 1. Analyst Agent (Qwen3)
         analyst = Agent(
-            role="Problem Analyst",
-            goal="Create a numbered list of steps to solve a problem. Your ONLY output should be this list.",
-            backstory="You are a machine-like planner. You receive a problem and output a numbered list of steps. You do not add commentary, explanations, or any text other than the numbered list itself.",
+            role="Problem Analyst and Strategist",
+            goal="First, analyze a problem to determine if it can be solved with internal reasoning or if it requires internet research. Then, create a precise plan for the next agent to follow. Do not search over the internet, your job is to decide if the next agent needs to search the internet or not, along with a to-do list.",
+            backstory="You are a master strategist. Your first step is always to determine the nature of the problem: does it require new information, or can it be solved with logic and existing knowledge? Based on this, you produce a clear, actionable plan that explicitly states whether to search the web or to use reasoning. You never execute the plan yourself; you only create it.",
             llm=self.llms["analyst"],
-            verbose=False,
+            verbose=True,
             allow_delegation=False
         )
 
         # 2. Researcher Agent (DeepSeek-R1)
         researcher = Agent(
-            role="Information Researcher",
-            goal="Gather, verify, and synthesize information from the internet to answer questions based on a provided plan.",
-            backstory="You are a skilled researcher, adept at navigating the web. You follow a given plan, perform searches, and provide clear, fact-based answers.",
+            role="Conditional Information Processor",
+            goal="Execute a plan from the Problem Analyst. You will either perform internet research or use your internal knowledge based *only* on the instructions in the plan. When using a tool, your FINAL and ONLY output must be the JSON action for the tool call.",
+            backstory="You are a hyper-efficient, silent processor. You follow plans with precision. If a plan requires reasoning, you provide a detailed report. If the plan requires a search, you respond ONLY with the required tool-calling JSON and absolutely no other conversational text or explanation. You understand that any extra text before or after the JSON will cause a system failure.",
             llm=self.llms["researcher"],
             tools=[self.search_tool, self.scrape_tool],
             verbose=True,
@@ -265,26 +265,34 @@ class MultiModelCrew:
 
         # Task 1: Analysis and Planning
         analysis_task = Task(
-            description=f"Analyze the following problem and break it down into a numbered to-do list for a researcher: '{problem}'",
-            expected_output="A numbered list of 2-4 actionable search queries for a researcher to execute.",
+            description=f"""Analyze the following problem: '{problem}'.
+                    First, decide if this problem requires an internet search to acquire new information or if it can be solved with logical reasoning alone.
+                    Based on your decision, generate a plan.
+                    If an internet search is required, begin your output with the single word "SEARCH" on the first line, followed by a numbered list of 2-4 specific search queries.
+                    If no search is required, begin your output with the single word "REASON" on the first line, followed by a logical outline of steps to reason through the problem.""",
+            expected_output="""A plan that starts with either "SEARCH" or "REASON" on the first line.
+                    If the first line is "SEARCH", it is followed by a numbered list of actionable search queries.
+                    If the first line is "REASON", it is followed by a conceptual outline for solving the problem using logic.""",
             agent=analyst,
         )
 
         # Task 2: Research and Information Gathering
         research_task = Task(
-            description="""For each step in the provided to-do list, execute a search and gather the relevant information.
-            The to-do list you must follow is in the context.""",
-            expected_output="A detailed report summarizing your findings from the search results. The report should directly answer the questions posed in the to-do list. Cite your sources.",
+            description=f"""Read the plan provided by the Problem Analyst.
+                            - If the plan says "SEARCH", perform the search. Then, take the most relevant URL from the search results and use the scrape tool to read its content.
+                            - If the plan says "REASON", use your internal knowledge to answer.
+                            Your final output should be the information you gathered, whether from scraping or reasoning.""",
+            expected_output="""A detailed report of the information gathered from either the scraped website content or internal knowledge. This report will be passed to the synthesizer.""",
             agent=researcher,
             context=[analysis_task]
         )
 
         # Task 3: Synthesis and Final Solution
         synthesis_task = Task(
-            description="""You have been given a research report by the 'Information Researcher'. Your task is to compile this information into a final, well-structured answer.
-            Do not add new information or deviate from the provided report.
-            Base your entire final answer on the results from the research report.""",
-            expected_output="A comprehensive, well-structured final answer that is the direct result of the research. The answer must directly address the original problem.",
+            description="""You have been given a report by the 'Conditional Information Processor'. Your task is to compile this information into a final, well-structured answer.
+                    Do not add new information or deviate from the provided report.
+                    Base your entire final answer on the results from the report.""",
+            expected_output="A comprehensive, well-structured final answer that is the direct result of the research or reasoning. The answer must directly address the original problem.",
             agent=synthesizer,
             context=[research_task]
         )
@@ -321,7 +329,6 @@ class MultiModelCrew:
         except Exception as e:
             print(f"{Colors.FAIL}\n✗ Error during problem solving: {str(e)}{Colors.ENDC}")
             return f"Error: {str(e)}"
-
 
 def main():
     """Main execution function"""
