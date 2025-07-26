@@ -3,6 +3,7 @@
 import os
 from crewai_tools.tools.scrape_website_tool.scrape_website_tool import ScrapeWebsiteTool
 from dotenv import load_dotenv
+import re
 
 load_dotenv()
 
@@ -102,11 +103,12 @@ class OllamaManager:
 class ConditionalMultiModelCrew:
     def __init__(self):
         self.ollama_manager = OllamaManager()
-        self.openrouter_api_key = os.getenv("OPENAI_API_KEY")
+        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         self.models_config = self._setup_model_configurations()
         self.llms = {}
         self.agents = {}
         self.knowledge_base = {}
+        self._cached_analysis_output = None
         self.search_tool = BraveSearchTool()
         self.scrape_tool = ScrapeWebsiteTool()
 
@@ -124,7 +126,7 @@ class ConditionalMultiModelCrew:
             ),
             "searcher": ModelConfig(
                 name="Qwen3 Search Agent",
-                model_id="openrouter/qwen/qwen3-coder:free",
+                model_id="openrouter/qwen/qwen3-coder",
                 provider=ModelProvider.OPENROUTER,
                 strength=ModelStrength.SEARCH,
                 role="Internet Research Specialist",
@@ -156,9 +158,10 @@ class ConditionalMultiModelCrew:
 
     def _check_openrouter_setup(self) -> bool:
         if not self.openrouter_api_key:
-            print(f"{Colors.FAIL}✗ OPENAI_API_KEY not found in environment variables{Colors.ENDC}")
+            print(f"{Colors.FAIL}✗ OpenRouter API key not found{Colors.ENDC}")
             print(f"{Colors.WARNING}Please add your OpenRouter API key to .env file:{Colors.ENDC}")
-            print(f"{Colors.OKCYAN}OPENAI_API_KEY=your_openrouter_api_key_here{Colors.ENDC}")
+            print(f"{Colors.OKCYAN}OPENROUTER_API_KEY=your_openrouter_api_key_here{Colors.ENDC}")
+            print(f"{Colors.OKCYAN}Or use: OPENAI_API_KEY=your_openrouter_api_key_here{Colors.ENDC}")
             print(f"{Colors.OKCYAN}Get your key from: https://openrouter.ai/keys{Colors.ENDC}")
             return False
 
@@ -170,11 +173,13 @@ class ConditionalMultiModelCrew:
 
         test_headers = {
             "Authorization": f"Bearer {self.openrouter_api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://localhost:3000",  # Optional: for OpenRouter analytics
+            "X-Title": "CrewAI Multi-Agent System"  # Optional: for OpenRouter analytics
         }
 
         test_payload = {
-            "model": "openrouter/qwen/qwen3-coder:free",
+            "model": "qwen/qwen3-coder",  # ← Without prefix for direct API test
             "messages": [{"role": "user", "content": "Hello"}],
             "max_tokens": 10
         }
@@ -191,15 +196,17 @@ class ConditionalMultiModelCrew:
             return True
         elif response.status_code == 401:
             print(f"{Colors.FAIL}✗ OpenRouter authentication failed - Invalid API key{Colors.ENDC}")
+            print(f"{Colors.WARNING}Make sure your API key starts with 'sk-or-v1-'{Colors.ENDC}")
             return False
         else:
             print(f"{Colors.WARNING}⚠ OpenRouter returned status {response.status_code}{Colors.ENDC}")
+            print(f"{Colors.WARNING}Response: {response.text[:200]}{Colors.ENDC}")
             return False
 
     def initialize_system(self) -> bool:
         print(f"{Colors.HEADER}{Colors.BOLD}")
-        print("🚀 Initializing Conditional Multi-Model AI Crew")
-        print("💰 Cost-Optimized: OpenRouter only for search tasks")
+        print("🚀 Initializing Fixed Conditional Multi-Model AI Crew")
+        print("🔧 With Proper TaskOutput Handling")
         print("=" * 55)
         print(f"{Colors.ENDC}")
 
@@ -231,7 +238,7 @@ class ConditionalMultiModelCrew:
 
         self._setup_llm_connections()
 
-        print(f"{Colors.OKGREEN}✅ Conditional Multi-Model Crew initialized successfully!{Colors.ENDC}")
+        print(f"{Colors.OKGREEN}✅ Fixed Conditional Multi-Model Crew initialized successfully!{Colors.ENDC}")
         return True
 
     def _setup_llm_connections(self):
@@ -254,94 +261,70 @@ class ConditionalMultiModelCrew:
                 self.llms[key] = LLM(
                     model=config.model_id,
                     base_url="https://openrouter.ai/api/v1",
+                    api_key=self.openrouter_api_key,
                     temperature=config.temperature,
                     max_tokens=4096,
                     top_p=0.9,
                     frequency_penalty=0.0,
                     presence_penalty=0.0,
-                    system_message = "You are a helpful assistant. Do not use <think> tags. Always start your response directly with the required keyword.",
-                    stop = ["<think>"]
                 )
                 print(f"{Colors.OKGREEN}  ✓ {config.name} (OpenRouter) connected{Colors.ENDC}")
 
-    # FIXED: Updated condition functions with proper TaskOutput access and debugging
+    def _extract_and_cache_output(self, output: TaskOutput) -> str:
+        """Extract output once and cache it"""
+        if self._cached_analysis_output is not None:
+            return self._cached_analysis_output
+
+        # Try extraction methods in priority order
+        extraction_methods = [
+            ("output.raw", lambda: getattr(output, 'raw', None)),
+            ("str(output)", lambda: str(output)),
+            ("output.raw_output", lambda: getattr(output, 'raw_output', None)),
+        ]
+
+        for method_name, method in extraction_methods:
+            try:
+                content = method()
+                if content and str(content).strip():
+                    # CRITICAL FIX: Remove thinking tags before caching
+                    think_pattern = r'<think>.*?</think>'
+                    cleaned = re.sub(think_pattern, '', str(content), flags=re.DOTALL | re.IGNORECASE)
+
+                    # Clean up extra whitespace
+                    cleaned = re.sub(r'\n\s*\n', '\n', cleaned)
+                    cleaned = cleaned.strip()
+
+                    self._cached_analysis_output = cleaned
+                    return cleaned
+            except:
+                continue
+
+        return ""
+
     def should_search(self, output: TaskOutput) -> bool:
-        """Condition function to determine if search task should run - FIXED VERSION"""
-        # Debug: Print the actual output to understand its structure
-        print(f"{Colors.OKCYAN}[DEBUG] Checking search condition. Output type: {type(output)}{Colors.ENDC}")
-
-        # Try multiple ways to access the output content
-        output_text = ""
-
-        # Method 1: Try direct string conversion
-        if hasattr(output, '__str__'):
-            output_text = str(output)
-
-        # Method 2: Try raw attribute (original approach)
-        if not output_text and hasattr(output, 'raw'):
-            output_text = str(output.raw)
-
-        # Method 3: Try raw_output attribute
-        if not output_text and hasattr(output, 'raw_output'):
-            output_text = str(output.raw_output)
-
-        # Method 4: Try result attribute
-        if not output_text and hasattr(output, 'result'):
-            output_text = str(output.result)
-
-        print(f"{Colors.OKCYAN}[DEBUG] Output text for search condition: '{output_text[:100]}...'{Colors.ENDC}")
-
-        analysis_result = output_text.strip().upper()
-        should_search_result = analysis_result.startswith('SEARCH')
-
-        print(f"{Colors.OKCYAN}[DEBUG] Search condition result: {should_search_result}{Colors.ENDC}")
-        return should_search_result
+        clean_output = self._extract_and_cache_output(output)
+        return clean_output.upper().startswith('SEARCH')
 
     def should_reason(self, output: TaskOutput) -> bool:
-        """Condition function to determine if reasoning task should run - FIXED VERSION"""
-        # Debug: Print the actual output to understand its structure
-        print(f"{Colors.OKCYAN}[DEBUG] Checking reason condition. Output type: {type(output)}{Colors.ENDC}")
-
-        # Try multiple ways to access the output content
-        output_text = ""
-
-        # Method 1: Try direct string conversion
-        if hasattr(output, '__str__'):
-            output_text = str(output)
-
-        # Method 2: Try raw attribute (original approach)
-        if not output_text and hasattr(output, 'raw'):
-            output_text = str(output.raw)
-
-        # Method 3: Try raw_output attribute
-        if not output_text and hasattr(output, 'raw_output'):
-            output_text = str(output.raw_output)
-
-        # Method 4: Try result attribute
-        if not output_text and hasattr(output, 'result'):
-            output_text = str(output.result)
-
-        print(f"{Colors.OKCYAN}[DEBUG] Output text for reason condition: '{output_text[:100]}...'{Colors.ENDC}")
-
-        analysis_result = output_text.strip().upper()
-        should_reason_result = analysis_result.startswith('REASON')
-
-        print(f"{Colors.OKCYAN}[DEBUG] Reason condition result: {should_reason_result}{Colors.ENDC}")
-        return should_reason_result
+        clean_output = self._extract_and_cache_output(output)  # Uses cached result
+        return clean_output.upper().startswith('REASON')
 
     def solve_problem(self, problem: str) -> str:
+        self._cached_analysis_output = None
         print(f"{Colors.HEADER}{Colors.BOLD}")
-        print("🧠 Conditional Multi-Model Problem Solving")
-        print("=" * 45)
+        print("🧠 Fixed Conditional Multi-Model Problem Solving")
+        print("=" * 50)
         print(f"{Colors.ENDC}")
         print(f"{Colors.OKBLUE}Problem: {problem}{Colors.ENDC}")
         print()
 
-        # Create Agents
+        # Create Agents with improved prompts (no thinking tags)
         analyst = Agent(
             role="Problem Analyst and Strategist",
-            goal="First, analyze a problem to determine if it can be solved with internal reasoning or if it requires internet research. Then, create a precise plan for the next agent to follow. Do not search over the internet, your job is to decide if the next agent needs to search the internet or not, along with a to-do list.",
-            backstory="You are a master strategist. Your first step is always to determine the nature of the problem: does it require new information, or can it be solved with logic and existing knowledge? Based on this, you produce a clear, actionable plan that explicitly states whether to search the web or to use reasoning. You never execute the plan yourself; you only create it.",
+            goal="ONLY route problems, never solve them. Determine if a problem needs SEARCH or REASON.",
+            backstory="""You are a routing agent. Your job is NEVER to solve problems, only to decide the approach.
+            You must respond with either 'SEARCH' or 'REASON' as the first word, followed by action steps.
+            You do NOT provide solutions, answers, or solve anything. You only route.""",
             llm=self.llms["analyst"],
             verbose=False,
             allow_delegation=False
@@ -375,20 +358,15 @@ class ConditionalMultiModelCrew:
             allow_delegation=False
         )
 
-        # Create Tasks
+        # Create Tasks with improved prompts
         analysis_task = Task(
-            description=f"""Analyze the following problem: '{problem}'.
-                            First, decide if this problem requires an internet search to acquire new information or if it can be solved with logical reasoning alone.
-                            Based on your decision, generate a plan.
-                            If an internet search is required, begin your output with the single word "SEARCH" on the first line, followed by a numbered list of 2-4 specific search queries.
-                            If no search is required, begin your output with the single word "REASON" on the first line, followed by a logical outline of steps to reason through the problem.""",
-            expected_output="""A plan that starts with either "SEARCH" or "REASON" on the first line.
-                            If the first line is "SEARCH", it is followed by a numbered list of actionable search queries.
-                            If the first line is "REASON", it is followed by a numbered list of actionable items.""",
+            description=f"""CRITICAL: You must analyze this problem and decide routing ONLY. Do NOT solve it. Problem: '{problem}' 
+            Your ONLY job is to decide routing. You must respond in this EXACT format: For current/live data (stocks, weather, news): Start with "SEARCH" and For math/logic/general knowledge: Start with "REASON"
+            Format: First word must be exactly "SEARCH" or "REASON" followed by numbered steps.""",
+            expected_output="Must start with exactly 'SEARCH' or 'REASON' followed by numbered action items. NO SOLUTIONS.",
             agent=analyst,
         )
 
-        # FIXED: Added context parameter to conditional tasks
         search_task = ConditionalTask(
             description=f"""You have been assigned a problem that requires internet research: '{problem}'
 
@@ -398,14 +376,13 @@ class ConditionalMultiModelCrew:
                     3. Scrape key websites to gather detailed information
                     4. Compile a comprehensive research report
 
-                    Provide detailed findings with sources.""",
-            expected_output="A comprehensive research report with current information and source citations.",
+            Focus on accuracy and current data.""",
+            expected_output="Comprehensive research report with current information and source citations.",
             condition=self.should_search,
             agent=search_agent,
-            context=[analysis_task]  # FIXED: Added context
+            context=[analysis_task]
         )
 
-        # FIXED: Added context parameter to conditional tasks
         reasoning_task = ConditionalTask(
             description=f"""You have been assigned a problem that can be solved with logical reasoning: '{problem}'
 
@@ -415,11 +392,11 @@ class ConditionalMultiModelCrew:
                     3. Existing knowledge and established principles
                     4. Clear reasoning chain
 
-                    Provide a detailed solution with your reasoning process.""",
-            expected_output="A logical solution with clear reasoning steps and explanation.",
+            Provide detailed solution with reasoning process.""",
+            expected_output="Complete logical solution with clear reasoning steps.",
             condition=self.should_reason,
             agent=reasoning_agent,
-            context=[analysis_task]  # FIXED: Added context
+            context=[analysis_task]
         )
 
         synthesis_task = Task(
@@ -454,21 +431,8 @@ class ConditionalMultiModelCrew:
             }
         )
 
-        print(f"{Colors.OKCYAN}🚀 Starting conditional problem solving...{Colors.ENDC}")
+        print(f"{Colors.OKCYAN}🚀 Starting fixed conditional problem solving...{Colors.ENDC}")
         result = crew.kickoff(inputs={'problem': problem})
-
-        # Determine cost reporting
-        if hasattr(result, 'tasks_outputs') and len(result.tasks_outputs) > 0:
-            analysis_output = str(result.tasks_outputs[0]).upper() if result.tasks_outputs[0] else ""
-            if "SEARCH" in analysis_output:
-                print(f"{Colors.WARNING}💰 Used OpenRouter for search task{Colors.ENDC}")
-            else:
-                print(f"{Colors.OKGREEN}💰 Used only local Ollama models (no OpenRouter cost){Colors.ENDC}")
-        else:
-            if "search" in str(result).lower():
-                print(f"{Colors.WARNING}💰 Used OpenRouter for search task{Colors.ENDC}")
-            else:
-                print(f"{Colors.OKGREEN}💰 Used only local Ollama models (no OpenRouter cost){Colors.ENDC}")
 
         print(f"\n{Colors.OKGREEN}")
         print("=" * 50)
@@ -487,16 +451,17 @@ def main():
         sys.exit(1)
 
     test_problems = [
-        "What is the current stock price of Tesla and how has it performed this week?",
-        "Calculate 9^56 (9 to the power of 56)",
-        "What are the latest developments in quantum computing announced this month?",
-        "Calculate the compound interest on $10,000 invested at 5% annually for 10 years.",
-        "Solve the equation: 2x + 5 = 17",
-        "What is the weather in New York City today?"
+        "What is the current stock price of Tesla and how has it performed this week?",  # SEARCH
+        "Calculate 9^56 (9 to the power of 56)",  # REASON
+        "What are the latest developments in quantum computing announced this month?",  # SEARCH
+        "Calculate the compound interest on $10,000 invested at 5% annually for 10 years.",  # REASON
+        "Solve the equation: 2x + 5 = 17",  # REASON
+        "What is the weather in New York City today?"  # SEARCH
     ]
 
     print(f"{Colors.HEADER}{Colors.BOLD}")
     print("🎯 Fixed Conditional Multi-Model AI Crew Ready!")
+    print("🔧 Proper TaskOutput handling implemented")
     print("🧠 Analyst: Qwen3 (Ollama)")
     print("🔍 Search Agent: Qwen3 (OpenRouter) - only when needed")
     print("💭 Reasoning Agent: Qwen3 (Ollama)")
