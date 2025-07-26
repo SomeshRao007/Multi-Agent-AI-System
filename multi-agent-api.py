@@ -4,33 +4,18 @@ import os
 from crewai_tools.tools.scrape_website_tool.scrape_website_tool import ScrapeWebsiteTool
 from dotenv import load_dotenv
 import re
-
-load_dotenv()
-
 import sys
-import json
-from typing import Dict, Any, Optional
-from pathlib import Path
-import requests
+from typing import Dict
 from dataclasses import dataclass
 from enum import Enum
 from crewai import Agent, Task, Crew, Process
 from crewai.llm import LLM
 from crewai.tasks.conditional_task import ConditionalTask
 from crewai.tasks.task_output import TaskOutput
-from crewai_tools import BraveSearchTool, FileReadTool, DirectoryReadTool
+from crewai_tools import BraveSearchTool
+from service_manager import ServiceManager, Colors
 
-
-class Colors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+load_dotenv()
 
 
 class ModelStrength(Enum):
@@ -57,53 +42,9 @@ class ModelConfig:
     context_window: int
 
 
-class OllamaManager:
-    def __init__(self, base_url: str = "http://localhost:11434"):
-        self.base_url = base_url
-        self.api_url = f"{base_url}/api"
-
-    def check_ollama_status(self) -> bool:
-        response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-        return response.status_code == 200
-
-    def list_available_models(self) -> list:
-        response = requests.get(f"{self.api_url}/tags")
-        if response.status_code == 200:
-            return [model['name'] for model in response.json().get('models', [])]
-        return []
-
-    def check_model_availability(self, model_name: str) -> bool:
-        available_models = self.list_available_models()
-        return any(model_name in model for model in available_models)
-
-    def pull_model_if_needed(self, model_name: str) -> bool:
-        if self.check_model_availability(model_name):
-            print(f"{Colors.OKGREEN}✓ Model {model_name} already available{Colors.ENDC}")
-            return True
-
-        print(f"{Colors.WARNING}⚠ Model {model_name} not found. Downloading...{Colors.ENDC}")
-        print(f"{Colors.OKCYAN}This may take several minutes depending on model size{Colors.ENDC}")
-
-        import subprocess
-        result = subprocess.run(
-            ["ollama", "pull", model_name],
-            capture_output=True,
-            text=True,
-            timeout=1800
-        )
-
-        if result.returncode == 0:
-            print(f"{Colors.OKGREEN}✓ Successfully downloaded {model_name}{Colors.ENDC}")
-            return True
-        else:
-            print(f"{Colors.FAIL}✗ Failed to download {model_name}: {result.stderr}{Colors.ENDC}")
-            return False
-
-
 class ConditionalMultiModelCrew:
     def __init__(self):
-        self.ollama_manager = OllamaManager()
-        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        self.service_manager = ServiceManager(openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY"))
         self.models_config = self._setup_model_configurations()
         self.llms = {}
         self.agents = {}
@@ -156,53 +97,6 @@ class ConditionalMultiModelCrew:
             )
         }
 
-    def _check_openrouter_setup(self) -> bool:
-        if not self.openrouter_api_key:
-            print(f"{Colors.FAIL}✗ OpenRouter API key not found{Colors.ENDC}")
-            print(f"{Colors.WARNING}Please add your OpenRouter API key to .env file:{Colors.ENDC}")
-            print(f"{Colors.OKCYAN}OPENROUTER_API_KEY=your_openrouter_api_key_here{Colors.ENDC}")
-            print(f"{Colors.OKCYAN}Or use: OPENAI_API_KEY=your_openrouter_api_key_here{Colors.ENDC}")
-            print(f"{Colors.OKCYAN}Get your key from: https://openrouter.ai/keys{Colors.ENDC}")
-            return False
-
-        print(f"{Colors.OKGREEN}✓ OpenRouter API key found (length: {len(self.openrouter_api_key)}){Colors.ENDC}")
-        return True
-
-    def _test_openrouter_connection(self) -> bool:
-        print(f"{Colors.OKCYAN}Testing OpenRouter connection...{Colors.ENDC}")
-
-        test_headers = {
-            "Authorization": f"Bearer {self.openrouter_api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://localhost:3000",  # Optional: for OpenRouter analytics
-            "X-Title": "CrewAI Multi-Agent System"  # Optional: for OpenRouter analytics
-        }
-
-        test_payload = {
-            "model": "qwen/qwen3-coder",  # ← Without prefix for direct API test
-            "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 10
-        }
-
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=test_headers,
-            json=test_payload,
-            timeout=10
-        )
-
-        if response.status_code == 200:
-            print(f"{Colors.OKGREEN}✓ OpenRouter connection successful{Colors.ENDC}")
-            return True
-        elif response.status_code == 401:
-            print(f"{Colors.FAIL}✗ OpenRouter authentication failed - Invalid API key{Colors.ENDC}")
-            print(f"{Colors.WARNING}Make sure your API key starts with 'sk-or-v1-'{Colors.ENDC}")
-            return False
-        else:
-            print(f"{Colors.WARNING}⚠ OpenRouter returned status {response.status_code}{Colors.ENDC}")
-            print(f"{Colors.WARNING}Response: {response.text[:200]}{Colors.ENDC}")
-            return False
-
     def initialize_system(self) -> bool:
         print(f"{Colors.HEADER}{Colors.BOLD}")
         print("🚀 Initializing Fixed Conditional Multi-Model AI Crew")
@@ -210,16 +104,16 @@ class ConditionalMultiModelCrew:
         print("=" * 55)
         print(f"{Colors.ENDC}")
 
-        if not self._check_openrouter_setup():
+        if not self.service_manager.check_openrouter_setup():
             return False
 
-        if not self._test_openrouter_connection():
+        if not self.service_manager.test_openrouter_connection():
             print(f"{Colors.WARNING}⚠ OpenRouter test failed - search tasks will not work{Colors.ENDC}")
             print(f"{Colors.WARNING}⚠ Continuing with local models only (reasoning tasks will work){Colors.ENDC}")
 
         ollama_models = [k for k, v in self.models_config.items() if v.provider == ModelProvider.OLLAMA]
         if ollama_models:
-            if not self.ollama_manager.check_ollama_status():
+            if not self.service_manager.check_ollama_status():
                 print(f"{Colors.FAIL}✗ Ollama service not running{Colors.ENDC}")
                 print(f"{Colors.WARNING}Please start Ollama with: ollama serve{Colors.ENDC}")
                 return False
@@ -229,7 +123,7 @@ class ConditionalMultiModelCrew:
             models_ready = True
             for key, config in self.models_config.items():
                 if config.provider == ModelProvider.OLLAMA:
-                    if not self.ollama_manager.pull_model_if_needed(config.model_id):
+                    if not self.service_manager.pull_model_if_needed(config.model_id):
                         models_ready = False
 
             if not models_ready:
@@ -238,7 +132,7 @@ class ConditionalMultiModelCrew:
 
         self._setup_llm_connections()
 
-        print(f"{Colors.OKGREEN}✅ Fixed Conditional Multi-Model Crew initialized successfully!{Colors.ENDC}")
+        print(f"{Colors.OKGREEN}✅ Multi-Model agents initialized successfully!{Colors.ENDC}")
         return True
 
     def _setup_llm_connections(self):
@@ -261,7 +155,7 @@ class ConditionalMultiModelCrew:
                 self.llms[key] = LLM(
                     model=config.model_id,
                     base_url="https://openrouter.ai/api/v1",
-                    api_key=self.openrouter_api_key,
+                    api_key=self.service_manager.openrouter_api_key,
                     temperature=config.temperature,
                     max_tokens=4096,
                     top_p=0.9,
@@ -275,7 +169,6 @@ class ConditionalMultiModelCrew:
         if self._cached_analysis_output is not None:
             return self._cached_analysis_output
 
-        # Try extraction methods in priority order
         extraction_methods = [
             ("output.raw", lambda: getattr(output, 'raw', None)),
             ("str(output)", lambda: str(output)),
@@ -283,21 +176,14 @@ class ConditionalMultiModelCrew:
         ]
 
         for method_name, method in extraction_methods:
-            try:
-                content = method()
-                if content and str(content).strip():
-                    # CRITICAL FIX: Remove thinking tags before caching
-                    think_pattern = r'<think>.*?</think>'
-                    cleaned = re.sub(think_pattern, '', str(content), flags=re.DOTALL | re.IGNORECASE)
-
-                    # Clean up extra whitespace
-                    cleaned = re.sub(r'\n\s*\n', '\n', cleaned)
-                    cleaned = cleaned.strip()
-
-                    self._cached_analysis_output = cleaned
-                    return cleaned
-            except:
-                continue
+            content = method()
+            if content and str(content).strip():
+                think_pattern = r'<think>.*?</think>'
+                cleaned = re.sub(think_pattern, '', str(content), flags=re.DOTALL | re.IGNORECASE)
+                cleaned = re.sub(r'\n\s*\n', '\n', cleaned)
+                cleaned = cleaned.strip()
+                self._cached_analysis_output = cleaned
+                return cleaned
 
         return ""
 
@@ -306,7 +192,7 @@ class ConditionalMultiModelCrew:
         return clean_output.upper().startswith('SEARCH')
 
     def should_reason(self, output: TaskOutput) -> bool:
-        clean_output = self._extract_and_cache_output(output)  # Uses cached result
+        clean_output = self._extract_and_cache_output(output)
         return clean_output.upper().startswith('REASON')
 
     def solve_problem(self, problem: str) -> str:
@@ -318,7 +204,6 @@ class ConditionalMultiModelCrew:
         print(f"{Colors.OKBLUE}Problem: {problem}{Colors.ENDC}")
         print()
 
-        # Create Agents with improved prompts (no thinking tags)
         analyst = Agent(
             role="Problem Analyst and Strategist",
             goal="ONLY route problems, never solve them. Determine if a problem needs SEARCH or REASON.",
@@ -358,7 +243,6 @@ class ConditionalMultiModelCrew:
             allow_delegation=False
         )
 
-        # Create Tasks with improved prompts
         analysis_task = Task(
             description=f"""CRITICAL: You must analyze this problem and decide routing ONLY. Do NOT solve it. Problem: '{problem}' 
             Your ONLY job is to decide routing. You must respond in this EXACT format: For current/live data (stocks, weather, news): Start with "SEARCH" and For math/logic/general knowledge: Start with "REASON"
@@ -414,7 +298,6 @@ class ConditionalMultiModelCrew:
             context=[search_task, reasoning_task]
         )
 
-        # Create and configure the crew
         crew = Crew(
             agents=[analyst, search_agent, reasoning_agent, synthesizer],
             tasks=[analysis_task, search_task, reasoning_task, synthesis_task],
@@ -451,21 +334,20 @@ def main():
         sys.exit(1)
 
     test_problems = [
-        "What is the current stock price of Tesla and how has it performed this week?",  # SEARCH
-        "Calculate 9^56 (9 to the power of 56)",  # REASON
-        "What are the latest developments in quantum computing announced this month?",  # SEARCH
-        "Calculate the compound interest on $10,000 invested at 5% annually for 10 years.",  # REASON
-        "Solve the equation: 2x + 5 = 17",  # REASON
-        "What is the weather in New York City today?"  # SEARCH
+        "What is the current stock price of Tesla and how has it performed this week?",
+        "Calculate 9^56 (9 to the power of 56)",
+        "What are the latest developments in quantum computing announced this month?",
+        "Calculate the compound interest on $10,000 invested at 5% annually for 10 years.",
+        "Solve the equation: 2x + 5 = 17",
+        "What is the weather in New York City today?"
     ]
 
     print(f"{Colors.HEADER}{Colors.BOLD}")
-    print("🎯 Fixed Conditional Multi-Model AI Crew Ready!")
-    print("🔧 Proper TaskOutput handling implemented")
-    print("🧠 Analyst: Qwen3 (Ollama)")
-    print("🔍 Search Agent: Qwen3 (OpenRouter) - only when needed")
-    print("💭 Reasoning Agent: Qwen3 (Ollama)")
-    print("📝 Synthesizer: Gemma3 (Ollama)")
+    print("🎯 Multi-Model AI Crew Ready!")
+    print("🧠 Analyst: Qwen3-4B (Ollama)")
+    print("🔍 Search Agent: Qwen3-480B (OpenRouter) - only when needed")
+    print("💭 Reasoning Agent: Qwen3-8B (Ollama)")
+    print("📝 Synthesizer: Gemma3-4B (Ollama)")
     print(f"{Colors.ENDC}")
     print(f"{Colors.OKCYAN}Choose a test problem or enter your own:{Colors.ENDC}")
 
