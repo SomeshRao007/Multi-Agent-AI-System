@@ -43,7 +43,7 @@ class OpenRouterAgent:
     def create_llm(self):
         """Create LLM connection to OpenRouter"""
         return LLM(
-            model="openrouter/qwen/qwen3-coder:free",  # Add openrouter/ prefix
+            model="openrouter/qwen/qwen3-coder",  # Add openrouter/ prefix
             base_url="https://openrouter.ai/api/v1",
             temperature=0.7,
             max_tokens=4096,

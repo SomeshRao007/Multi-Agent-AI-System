@@ -1,0 +1,8 @@
+crewai
+crewai-tools
+langchain-ollama
+pandas
+beautifulsoup4
+chromadb
+python-dotenv
+pytest

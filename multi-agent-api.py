@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 
 import os
-from crewai_tools.tools.scrape_website_tool.scrape_website_tool import ScrapeWebsiteTool
-from dotenv import load_dotenv
 import re
 import sys
-from typing import Dict
-from dataclasses import dataclass
-from enum import Enum
 from crewai import Agent, Task, Crew, Process
 from crewai.llm import LLM
 from crewai.tasks.conditional_task import ConditionalTask
 from crewai.tasks.task_output import TaskOutput
 from crewai_tools import BraveSearchTool
+from crewai_tools.tools.scrape_website_tool.scrape_website_tool import ScrapeWebsiteTool
+from dataclasses import dataclass
+from dotenv import load_dotenv
+from enum import Enum
 from service_manager import ServiceManager, Colors
+from typing import Dict
 
 load_dotenv()
 
@@ -56,14 +56,14 @@ class ConditionalMultiModelCrew:
     def _setup_model_configurations(self) -> Dict[str, ModelConfig]:
         return {
             "analyst": ModelConfig(
-                name="Qwen Analyst",
-                model_id="qwen3:4b",
-                provider=ModelProvider.OLLAMA,
+                name="GLM Analyst",
+                model_id="openrouter/z-ai/glm-4.5",
+                provider=ModelProvider.OPENROUTER,
                 strength=ModelStrength.ANALYTICAL,
                 role="Problem Analyst",
                 description="Problem analysis and routing decisions",
                 temperature=0.3,
-                context_window=32768
+                context_window=128000
             ),
             "searcher": ModelConfig(
                 name="Qwen3 Search Agent",
