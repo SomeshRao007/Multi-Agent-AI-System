@@ -9,7 +9,6 @@
   
   [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
   [![CrewAI](https://img.shields.io/badge/CrewAI-0.152.0-green.svg)](https://github.com/joaomdmoura/crewAI)
-  [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 </div>
 
 ---
@@ -271,9 +270,6 @@ Contributions are welcome! Please feel free to submit pull requests, report bugs
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## 🙏 Acknowledgments
 
